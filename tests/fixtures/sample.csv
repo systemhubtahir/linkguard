@@ -1,0 +1,7 @@
+url
+https://example.com
+https://httpstat.us/404
+https://httpstat.us/200
+bad-url-no-scheme
+https://example.com
+
