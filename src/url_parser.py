@@ -6,12 +6,26 @@ Handles: empty rows, duplicates, whitespace, missing scheme.
 import csv
 import os
 
+from url_utils import dedupe, is_header_label, looks_like_url, normalize_url
 
-def _fix_scheme(url: str) -> str:
-    """Prepend https:// if scheme is missing."""
-    if url and not url.startswith(("http://", "https://")):
-        return "https://" + url
-    return url
+# Kept for callers/tests that reference the original private helper.
+_fix_scheme = normalize_url
+
+
+def _parse_txt(f) -> list:
+    return [normalize_url(line) for line in f if line.strip()]
+
+
+def _parse_csv(f) -> list:
+    urls = []
+    for row in csv.reader(f):
+        for cell in row:
+            if looks_like_url(cell) and not is_header_label(cell):
+                urls.append(normalize_url(cell))
+    return urls
+
+
+PARSERS = {".txt": _parse_txt, ".csv": _parse_csv}
 
 
 def parse_file(filepath: str) -> list:
@@ -20,33 +34,9 @@ def parse_file(filepath: str) -> list:
     Raises ValueError on unsupported file types.
     """
     ext = os.path.splitext(filepath)[1].lower()
-    urls = []
-
-    if ext == ".txt":
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                url = line.strip()
-                if url:
-                    urls.append(_fix_scheme(url))
-
-    elif ext == ".csv":
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                for cell in row:
-                    url = cell.strip()
-                    # Accept cells that look like URLs
-                    if url and ("." in url or url.startswith("http")):
-                        urls.append(_fix_scheme(url))
-    else:
+    parser = PARSERS.get(ext)
+    if parser is None:
         raise ValueError(f"Unsupported file type: {ext}. Use .csv or .txt")
 
-    # Deduplicate while preserving order
-    seen = set()
-    deduped = []
-    for url in urls:
-        if url not in seen:
-            seen.add(url)
-            deduped.append(url)
-
-    return deduped
+    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        return dedupe(parser(f))
