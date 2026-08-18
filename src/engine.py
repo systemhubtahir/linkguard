@@ -15,6 +15,7 @@ from url_utils import normalize_url
 
 TIMEOUT = 10
 MAX_WORKERS = 10
+PAUSE_POLL_INTERVAL = 0.1
 HEADERS = {
     'User-Agent': 'LinkGuard/1.0 (link health checker; +https://github.com/linkguard)'
 }
@@ -63,17 +64,34 @@ def check_url(url):
         return _result(url, None, 0, STATE_ERROR)
 
 
-def run_scan(urls, callback, stop_event):
+def _cancelled(cancel_event):
+    return cancel_event is not None and cancel_event.is_set()
+
+
+def _await_resume(pause_event, cancel_event):
+    """Block while paused. Returns False if the scan should not continue."""
+    while pause_event.is_set() and not _cancelled(cancel_event):
+        time.sleep(PAUSE_POLL_INTERVAL)
+    return not _cancelled(cancel_event)
+
+
+def run_scan(urls, callback, pause_event, cancel_event=None):
     """
-    Multi-threaded scan.
+    Multi-threaded scan, submitted in batches of MAX_WORKERS.
     callback(result_dict) called on main thread via queue — caller handles threading.
-    stop_event: threading.Event, set to pause/stop workers.
+    pause_event: threading.Event, set to hold the scan before the next batch,
+                 clear to resume it.
+    cancel_event: optional threading.Event, set to abort the scan for good.
     """
+    urls = list(urls)
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(check_url, url): url for url in urls}
-        for future in as_completed(futures):
-            if stop_event.is_set():
-                executor.shutdown(wait=False, cancel_futures=True)
+        for offset in range(0, len(urls), MAX_WORKERS):
+            if not _await_resume(pause_event, cancel_event):
                 break
-            result = future.result()
-            callback(result)
+            futures = [executor.submit(check_url, url)
+                       for url in urls[offset:offset + MAX_WORKERS]]
+            for future in as_completed(futures):
+                if _cancelled(cancel_event):
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    return
+                callback(future.result())

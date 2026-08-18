@@ -61,8 +61,19 @@ def test_parse_csv_single_column(tmp_path):
 def test_parse_csv_fixture():
     fixture = os.path.join(os.path.dirname(__file__), "fixtures", "sample.csv")
     urls = parse_file(fixture)
-    assert len(urls) >= 3
+    # duplicated example.com appears once, 'bad-url-no-scheme' fails the URL heuristic
+    assert urls == [
+        "https://example.com",
+        "https://httpstat.us/404",
+        "https://httpstat.us/200",
+    ]
+
+
+def test_parse_txt_fixture():
+    fixture = os.path.join(os.path.dirname(__file__), "fixtures", "sample.txt")
+    urls = parse_file(fixture)
     assert "https://www.google.com" in urls
+    assert len(urls) == 5
 
 def test_parse_unsupported_extension(tmp_path):
     f = tmp_path / "file.xlsx"

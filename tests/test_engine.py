@@ -171,25 +171,96 @@ def test_run_scan_empty_urls_does_nothing():
     assert results == []
 
 
-def test_run_scan_stops_when_event_already_set():
+def test_run_scan_aborts_when_cancel_already_set():
     results = []
-    stop_event = threading.Event()
-    stop_event.set()
+    cancel_event = threading.Event()
+    cancel_event.set()
     with patch('engine.check_url', side_effect=lambda u: {'url': u, 'state': 'Healthy'}):
-        run_scan(['https://a.com', 'https://b.com'], results.append, stop_event)
+        run_scan(['https://a.com', 'https://b.com'], results.append,
+                 threading.Event(), cancel_event)
     assert results == []
 
 
-def test_run_scan_stops_mid_flight_when_event_set():
-    urls = [f'https://{i}.com' for i in range(20)]
+def test_run_scan_aborts_mid_flight_when_cancel_set():
+    urls = [f'https://{i}.com' for i in range(50)]
     results = []
-    stop_event = threading.Event()
+    cancel_event = threading.Event()
 
     def callback(result):
         results.append(result)
-        stop_event.set()  # stop after the first delivered result
+        cancel_event.set()  # abort after the first delivered result
 
     with patch('engine.check_url', side_effect=lambda u: {'url': u, 'state': 'Healthy'}):
-        run_scan(urls, callback, stop_event)
+        run_scan(urls, callback, threading.Event(), cancel_event)
 
     assert len(results) == 1
+
+
+def test_run_scan_pause_holds_then_resume_finishes_every_url():
+    """Pausing must not end the scan: clearing the event resumes it."""
+    urls = [f'https://{i}.com' for i in range(engine.MAX_WORKERS * 3)]
+    results = []
+    pause_event = threading.Event()
+    delivered = threading.Event()
+
+    def callback(result):
+        results.append(result)
+        if len(results) == 1:
+            pause_event.set()  # pause right after the first result
+            delivered.set()
+
+    with patch('engine.check_url', side_effect=lambda u: {'url': u, 'state': 'Healthy'}), \
+         patch.object(engine, 'PAUSE_POLL_INTERVAL', 0.01):
+        worker = threading.Thread(
+            target=run_scan, args=(urls, callback, pause_event), daemon=True)
+        worker.start()
+
+        assert delivered.wait(5)
+        worker.join(timeout=0.3)
+        assert worker.is_alive()                      # held, not finished
+        assert len(results) < len(urls)
+
+        pause_event.clear()                           # Resume
+        worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert sorted(r['url'] for r in results) == sorted(urls)
+
+
+def test_run_scan_cancel_releases_a_paused_scan():
+    urls = [f'https://{i}.com' for i in range(engine.MAX_WORKERS * 2)]
+    pause_event = threading.Event()
+    cancel_event = threading.Event()
+    pause_event.set()
+
+    with patch('engine.check_url', side_effect=lambda u: {'url': u, 'state': 'Healthy'}), \
+         patch.object(engine, 'PAUSE_POLL_INTERVAL', 0.01):
+        worker = threading.Thread(
+            target=run_scan, args=(urls, [].append, pause_event, cancel_event), daemon=True)
+        worker.start()
+        worker.join(timeout=0.2)
+        assert worker.is_alive()
+
+        cancel_event.set()
+        worker.join(timeout=5)
+
+    assert not worker.is_alive()
+
+
+def test_run_scan_paused_before_start_issues_no_requests():
+    """Work is submitted per batch, so a pause held from the start fetches nothing."""
+    urls = [f'https://{i}.com' for i in range(engine.MAX_WORKERS * 2)]
+    pause_event = threading.Event()
+    cancel_event = threading.Event()
+    pause_event.set()
+
+    with patch('engine.check_url') as check, \
+         patch.object(engine, 'PAUSE_POLL_INTERVAL', 0.01):
+        worker = threading.Thread(
+            target=run_scan, args=(urls, [].append, pause_event, cancel_event), daemon=True)
+        worker.start()
+        worker.join(timeout=0.2)
+        check.assert_not_called()
+
+        cancel_event.set()
+        worker.join(timeout=5)
