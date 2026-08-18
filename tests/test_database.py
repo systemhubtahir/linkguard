@@ -3,6 +3,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import sqlite3
 import pytest
+from unittest.mock import MagicMock
 import database
 
 
@@ -47,3 +48,15 @@ def test_load_config(temp_db):
     cfg = database.load_config()
     assert cfg['key1'] == 'val1'
     assert cfg['key2'] == 'val2'
+
+
+def test_insert_result_closes_connection_and_propagates_sqlite_error(monkeypatch):
+    conn = MagicMock()
+    conn.execute.side_effect = sqlite3.OperationalError('database is locked')
+    monkeypatch.setattr(database.sqlite3, 'connect', lambda _: conn)
+
+    with pytest.raises(sqlite3.OperationalError, match='database is locked'):
+        database.insert_result('https://example.com', 200, 123.4, 'Healthy')
+
+    conn.rollback.assert_called_once()
+    conn.close.assert_called_once()

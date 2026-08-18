@@ -1,4 +1,5 @@
 import time
+import logging
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -7,6 +8,7 @@ MAX_WORKERS = 10
 HEADERS = {
     'User-Agent': 'LinkGuard/1.0 (link health checker; +https://github.com/linkguard)'
 }
+logger = logging.getLogger(__name__)
 
 
 def _classify(status_code):
@@ -26,7 +28,7 @@ def _classify(status_code):
 def check_url(url):
     """
     Send HEAD request, fall back to GET on 405.
-    Returns dict: {url, status_code, latency_ms, state}
+    Returns dict: {url, status_code, latency_ms, state, error}
     """
     url = url.strip()
     if not url.startswith(('http://', 'https://')):
@@ -42,14 +44,36 @@ def check_url(url):
             'url': url,
             'status_code': resp.status_code,
             'latency_ms': round(latency_ms, 2),
-            'state': _classify(resp.status_code)
+            'state': _classify(resp.status_code),
+            'error': None
         }
-    except requests.exceptions.Timeout:
-        return {'url': url, 'status_code': None, 'latency_ms': TIMEOUT * 1000, 'state': 'Timeout'}
-    except requests.exceptions.ConnectionError:
-        return {'url': url, 'status_code': None, 'latency_ms': 0, 'state': 'Error'}
-    except Exception:
-        return {'url': url, 'status_code': None, 'latency_ms': 0, 'state': 'Error'}
+    except requests.exceptions.Timeout as exc:
+        logger.warning('Timeout while checking %s: %s', url, exc)
+        return {
+            'url': url,
+            'status_code': None,
+            'latency_ms': TIMEOUT * 1000,
+            'state': 'Timeout',
+            'error': str(exc) or exc.__class__.__name__
+        }
+    except requests.exceptions.RequestException as exc:
+        logger.warning('Request failed while checking %s: %s', url, exc)
+        return {
+            'url': url,
+            'status_code': None,
+            'latency_ms': 0,
+            'state': 'Error',
+            'error': str(exc) or exc.__class__.__name__
+        }
+    except Exception as exc:
+        logger.exception('Unexpected error while checking %s', url)
+        return {
+            'url': url,
+            'status_code': None,
+            'latency_ms': 0,
+            'state': 'Error',
+            'error': str(exc) or exc.__class__.__name__
+        }
 
 
 def parse_file(filepath):
@@ -83,5 +107,19 @@ def run_scan(urls, callback, stop_event):
             if stop_event.is_set():
                 executor.shutdown(wait=False, cancel_futures=True)
                 break
-            result = future.result()
-            callback(result)
+            url = futures[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                logger.exception('Unexpected worker error while checking %s', url)
+                result = {
+                    'url': url,
+                    'status_code': None,
+                    'latency_ms': 0,
+                    'state': 'Error',
+                    'error': str(exc) or exc.__class__.__name__
+                }
+            try:
+                callback(result)
+            except Exception:
+                logger.exception('Scan callback failed while handling %s', url)

@@ -1,9 +1,11 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+import threading
 from unittest.mock import patch, MagicMock
 import pytest
-from engine import check_url, parse_file, _classify
+import requests
+from engine import check_url, parse_file, run_scan, _classify
 
 
 # ── _classify ──────────────────────────────────────────────────────────────
@@ -66,12 +68,70 @@ def test_check_url_timeout(mock_head):
     assert result['status_code'] is None
 
 
+@patch('engine.requests.head', side_effect=requests.exceptions.ConnectionError('DNS failed'))
+def test_check_url_request_error_is_recorded(mock_head):
+    result = check_url('https://unreachable.example.com')
+    assert result['state'] == 'Error'
+    assert result['error'] == 'DNS failed'
+
+
 def test_check_url_prepends_scheme():
     with patch('engine.requests.head') as mock_head:
         mock_resp = MagicMock(); mock_resp.status_code = 200
         mock_head.return_value = mock_resp
         result = check_url('example.com')
         assert result['url'].startswith('https://')
+
+
+def test_run_scan_delivers_worker_error_and_continues(monkeypatch):
+    def fake_check_url(url):
+        if url == 'bad.example.com':
+            raise RuntimeError('worker failed')
+        return {
+            'url': url,
+            'status_code': 200,
+            'latency_ms': 1,
+            'state': 'Healthy',
+            'error': None
+        }
+
+    monkeypatch.setattr('engine.check_url', fake_check_url)
+    results = []
+    run_scan(
+        ['bad.example.com', 'good.example.com'],
+        results.append,
+        threading.Event()
+    )
+
+    assert {result['url'] for result in results} == {
+        'bad.example.com', 'good.example.com'
+    }
+    error_result = next(result for result in results if result['url'] == 'bad.example.com')
+    assert error_result['state'] == 'Error'
+    assert error_result['error'] == 'worker failed'
+
+
+def test_run_scan_survives_callback_error(monkeypatch):
+    monkeypatch.setattr(
+        'engine.check_url',
+        lambda url: {
+            'url': url,
+            'status_code': 200,
+            'latency_ms': 1,
+            'state': 'Healthy',
+            'error': None
+        }
+    )
+    received = []
+
+    def callback(result):
+        received.append(result)
+        if len(received) == 1:
+            raise RuntimeError('callback failed')
+
+    run_scan(['first.example.com', 'second.example.com'], callback, threading.Event())
+
+    assert len(received) == 2
 
 
 # ── parse_file ─────────────────────────────────────────────────────────────
