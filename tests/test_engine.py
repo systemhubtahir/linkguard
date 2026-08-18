@@ -1,6 +1,9 @@
+import threading
 from unittest.mock import patch, MagicMock
+import requests
 import pytest
-from engine import check_url, parse_file, _classify
+import engine
+from engine import check_url, parse_file, run_scan, _classify
 
 
 # ── _classify ──────────────────────────────────────────────────────────────
@@ -91,3 +94,102 @@ def test_parse_file_skips_headers(tmp_path):
     f.write_text('url\nhttps://a.com\n')
     urls = parse_file(str(f))
     assert all('url' not in u.lower() or u.startswith('http') for u in urls)
+
+
+# ── _classify (remaining branches) ─────────────────────────────────────────
+
+def test_classify_informational_is_unknown():
+    assert _classify(100) == 'Unknown'
+
+def test_classify_403_is_error():
+    assert _classify(403) == 'Error'
+
+def test_classify_boundaries():
+    assert _classify(299) == 'Healthy'
+    assert _classify(399) == 'Redirect'
+
+
+# ── check_url (error paths) ────────────────────────────────────────────────
+
+@patch('engine.requests.head', side_effect=requests.exceptions.ConnectionError)
+def test_check_url_connection_error(mock_head):
+    result = check_url('https://does-not-resolve.example')
+    assert result == {
+        'url': 'https://does-not-resolve.example',
+        'status_code': None,
+        'latency_ms': 0,
+        'state': 'Error',
+    }
+
+
+@patch('engine.requests.head', side_effect=ValueError('bad url'))
+def test_check_url_unexpected_exception(mock_head):
+    result = check_url('https://example.com')
+    assert result['state'] == 'Error'
+    assert result['status_code'] is None
+
+
+@patch('engine.requests.head', side_effect=requests.exceptions.Timeout)
+def test_check_url_timeout_latency_is_timeout_budget(mock_head):
+    result = check_url('https://example.com')
+    assert result['latency_ms'] == engine.TIMEOUT * 1000
+
+
+@patch('engine.requests.head')
+def test_check_url_strips_whitespace(mock_head):
+    mock_head.return_value = MagicMock(status_code=200)
+    result = check_url('  https://example.com  ')
+    assert result['url'] == 'https://example.com'
+    assert mock_head.call_args.args[0] == 'https://example.com'
+
+
+@patch('engine.requests.head')
+def test_check_url_follows_redirects_with_headers(mock_head):
+    mock_head.return_value = MagicMock(status_code=200)
+    check_url('https://example.com')
+    kwargs = mock_head.call_args.kwargs
+    assert kwargs['allow_redirects'] is True
+    assert kwargs['timeout'] == engine.TIMEOUT
+    assert kwargs['headers'] is engine.HEADERS
+
+
+# ── run_scan ──────────────────────────────────────────────────────────────
+
+def test_run_scan_calls_callback_for_every_url():
+    urls = ['https://a.com', 'https://b.com', 'https://c.com']
+    results = []
+    with patch('engine.check_url', side_effect=lambda u: {'url': u, 'state': 'Healthy'}):
+        run_scan(urls, results.append, threading.Event())
+    assert sorted(r['url'] for r in results) == urls
+
+
+def test_run_scan_empty_urls_does_nothing():
+    results = []
+    with patch('engine.check_url') as check:
+        run_scan([], results.append, threading.Event())
+    check.assert_not_called()
+    assert results == []
+
+
+def test_run_scan_stops_when_event_already_set():
+    results = []
+    stop_event = threading.Event()
+    stop_event.set()
+    with patch('engine.check_url', side_effect=lambda u: {'url': u, 'state': 'Healthy'}):
+        run_scan(['https://a.com', 'https://b.com'], results.append, stop_event)
+    assert results == []
+
+
+def test_run_scan_stops_mid_flight_when_event_set():
+    urls = [f'https://{i}.com' for i in range(20)]
+    results = []
+    stop_event = threading.Event()
+
+    def callback(result):
+        results.append(result)
+        stop_event.set()  # stop after the first delivered result
+
+    with patch('engine.check_url', side_effect=lambda u: {'url': u, 'state': 'Healthy'}):
+        run_scan(urls, callback, stop_event)
+
+    assert len(results) == 1
