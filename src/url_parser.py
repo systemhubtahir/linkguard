@@ -5,54 +5,30 @@ Handles: empty rows, duplicates, whitespace, missing scheme.
 
 import csv
 import os
-import re
-from urllib.parse import urlsplit
+
+from url_utils import dedupe, is_header_label, is_safe_url, looks_like_url, normalize_url
+
+# Kept for callers/tests that reference the original private helper.
+_fix_scheme = normalize_url
 
 MAX_FILE_BYTES = 10 * 1024 * 1024
 MAX_URLS = 50_000
-MAX_URL_LENGTH = 2048
-ALLOWED_SCHEMES = ("http", "https")
 
 
-_SCHEME_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):(//)?")
+def _parse_txt(f) -> list:
+    return [normalize_url(line) for line in f if line.strip()]
 
 
-def _has_scheme(url: str) -> bool:
-    """True if the URL already carries a scheme (``host:8080`` does not)."""
-    match = _SCHEME_RE.match(url)
-    if not match:
-        return False
-    if match.group(2):
-        return True
-    return not url[match.end():][:1].isdigit()
+def _parse_csv(f) -> list:
+    urls = []
+    for row in csv.reader(f):
+        for cell in row:
+            if looks_like_url(cell) and not is_header_label(cell):
+                urls.append(normalize_url(cell))
+    return urls
 
 
-def _fix_scheme(url: str) -> str:
-    """Prepend https:// if scheme is missing; leave any existing scheme intact."""
-    if url and not _has_scheme(url):
-        return "https://" + url
-    return url
-
-
-def is_safe_url(url: str) -> bool:
-    """True only for well-formed http(s) URLs without embedded credentials."""
-    if not url or len(url) > MAX_URL_LENGTH:
-        return False
-    if any(c in url for c in ("\n", "\r", "\t", " ")):
-        return False
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return False
-    if parts.scheme not in ALLOWED_SCHEMES or not parts.hostname:
-        return False
-    if parts.username or parts.password:
-        return False
-    try:
-        parts.port
-    except ValueError:
-        return False
-    return True
+PARSERS = {".txt": _parse_txt, ".csv": _parse_csv}
 
 
 def parse_file(filepath: str) -> list:
@@ -61,40 +37,14 @@ def parse_file(filepath: str) -> list:
     Raises ValueError on unsupported file types.
     """
     ext = os.path.splitext(filepath)[1].lower()
+    parser = PARSERS.get(ext)
+    if parser is None:
+        raise ValueError(f"Unsupported file type: {ext}. Use .csv or .txt")
     if os.path.getsize(filepath) > MAX_FILE_BYTES:
         raise ValueError(
-            f"File is larger than {MAX_FILE_BYTES // (1024 * 1024)} MB limit."
+            f"File is larger than the {MAX_FILE_BYTES // (1024 * 1024)} MB limit."
         )
-    urls = []
 
-    if ext == ".txt":
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                url = line.strip()
-                if url:
-                    urls.append(_fix_scheme(url))
-
-    elif ext == ".csv":
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                for cell in row:
-                    url = cell.strip()
-                    # Accept cells that look like URLs
-                    if url and ("." in url or url.startswith("http")):
-                        urls.append(_fix_scheme(url))
-    else:
-        raise ValueError(f"Unsupported file type: {ext}. Use .csv or .txt")
-
-    # Deduplicate while preserving order
-    seen = set()
-    deduped = []
-    for url in urls:
-        if url in seen or not is_safe_url(url):
-            continue
-        seen.add(url)
-        deduped.append(url)
-        if len(deduped) >= MAX_URLS:
-            break
-
-    return deduped
+    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        urls = [url for url in dedupe(parser(f)) if is_safe_url(url)]
+    return urls[:MAX_URLS]

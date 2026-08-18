@@ -5,24 +5,31 @@ import queue
 import os
 
 from database import init_db, insert_result, load_config
-from engine import run_scan
-from url_parser import parse_file
+from engine import parse_file, run_scan
 from exporter import export_csv
+from theme import (
+    BLUE_100,
+    FONT_SMALL,
+    FONT_TABLE,
+    FONT_TABLE_BOLD,
+    GRAY_100,
+    GRAY_200,
+    GRAY_400,
+    GRAY_600,
+    GRAY_800,
+    RED,
+    ROW_EVEN,
+    ROW_ODD,
+    STATE_UNKNOWN,
+    STATUS_COLORS,
+    WHITE,
+    is_error_state,
+)
+from ui_components import make_toolbar_button
 
 # ── Theme ──────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode('light')
 ctk.set_default_color_theme('blue')
-
-# ── Status colors ──────────────────────────────────────────────────────────
-STATE_COLORS = {
-    'Healthy':  '#10B981',
-    'Redirect': '#F59E0B',
-    'Broken':   '#EF4444',
-    'Error':    '#EF4444',
-    'Timeout':  '#F59E0B',
-    'Invalid':  '#9CA3AF',
-    'Unknown':  '#9CA3AF',
-}
 
 
 class LinkGuardApp(ctk.CTk):
@@ -59,45 +66,32 @@ class LinkGuardApp(ctk.CTk):
         self._build_statusbar()
 
     def _build_topbar(self):
-        bar = ctk.CTkFrame(self, height=48, corner_radius=0, fg_color='#1F2937')
+        bar = ctk.CTkFrame(self, height=48, corner_radius=0, fg_color=GRAY_800)
         bar.grid(row=0, column=0, sticky='ew')
         bar.grid_propagate(False)
         bar.grid_columnconfigure(4, weight=1)
 
-        btn_cfg = {'width': 110, 'height': 32, 'corner_radius': 2,
-                   'fg_color': '#374151', 'hover_color': '#4B5563',
-                   'text_color': '#FFFFFF', 'font': ('Segoe UI', 12)}
-
-        self.btn_load = ctk.CTkButton(bar, text='Load File', command=self._load_file, **btn_cfg)
+        self.btn_load = make_toolbar_button(bar, 'Load File', self._load_file)
         self.btn_load.grid(row=0, column=0, padx=(12, 4), pady=8)
 
-        self.btn_start = ctk.CTkButton(bar, text='Start Scan', command=self._start_scan,
-                                       fg_color='#10B981', hover_color='#059669',
-                                       text_color='#FFFFFF', width=110, height=32,
-                                       corner_radius=2, font=('Segoe UI', 12))
+        self.btn_start = make_toolbar_button(bar, 'Start Scan', self._start_scan, style='start')
         self.btn_start.grid(row=0, column=1, padx=4, pady=8)
 
-        self.btn_pause = ctk.CTkButton(bar, text='Pause', command=self._pause_scan,
-                                       fg_color='#F59E0B', hover_color='#D97706',
-                                       text_color='#FFFFFF', width=90, height=32,
-                                       corner_radius=2, font=('Segoe UI', 12),
-                                       state='disabled')
+        self.btn_pause = make_toolbar_button(bar, 'Pause', self._pause_scan, style='pause',
+                                            width=90, state='disabled')
         self.btn_pause.grid(row=0, column=2, padx=4, pady=8)
 
         # spacer handled by weight=1 on column 4
 
-        self.btn_filter = ctk.CTkButton(bar, text='Errors Only', command=self._toggle_filter,
-                                        fg_color='#374151', hover_color='#4B5563',
-                                        text_color='#9CA3AF', width=110, height=32,
-                                        corner_radius=2, font=('Segoe UI', 12))
+        self.btn_filter = make_toolbar_button(bar, 'Errors Only', self._toggle_filter,
+                                              style='toolbar_muted')
         self.btn_filter.grid(row=0, column=5, padx=4, pady=8)
 
-        self.btn_export = ctk.CTkButton(bar, text='Export CSV', command=self._export,
-                                        **btn_cfg)
+        self.btn_export = make_toolbar_button(bar, 'Export CSV', self._export)
         self.btn_export.grid(row=0, column=6, padx=(4, 12), pady=8)
 
     def _build_grid(self):
-        frame = ctk.CTkFrame(self, corner_radius=0, fg_color='#F3F4F6')
+        frame = ctk.CTkFrame(self, corner_radius=0, fg_color=GRAY_100)
         frame.grid(row=1, column=0, sticky='nsew')
         frame.grid_rowconfigure(0, weight=1)
         frame.grid_columnconfigure(0, weight=1)
@@ -105,17 +99,17 @@ class LinkGuardApp(ctk.CTk):
         style = ttk.Style()
         style.theme_use('clam')
         style.configure('Treeview',
-                        background='#FFFFFF',
-                        foreground='#1F2937',
+                        background=WHITE,
+                        foreground=GRAY_800,
                         rowheight=26,
-                        fieldbackground='#FFFFFF',
-                        font=('Segoe UI', 10))
+                        fieldbackground=WHITE,
+                        font=FONT_TABLE)
         style.configure('Treeview.Heading',
-                        background='#E5E7EB',
-                        foreground='#1F2937',
-                        font=('Segoe UI', 10, 'bold'),
+                        background=GRAY_200,
+                        foreground=GRAY_800,
+                        font=FONT_TABLE_BOLD,
                         relief='flat')
-        style.map('Treeview', background=[('selected', '#DBEAFE')])
+        style.map('Treeview', background=[('selected', BLUE_100)])
 
         self.tree = ttk.Treeview(frame,
                                  columns=('id', 'url', 'status', 'latency', 'state'),
@@ -134,9 +128,9 @@ class LinkGuardApp(ctk.CTk):
         self.tree.column('state',   width=110, minwidth=80,  anchor='center')
 
         # Zebra + status tags
-        self.tree.tag_configure('odd',  background='#FFFFFF')
-        self.tree.tag_configure('even', background='#F9FAFB')
-        for state, color in STATE_COLORS.items():
+        self.tree.tag_configure('odd',  background=ROW_ODD)
+        self.tree.tag_configure('even', background=ROW_EVEN)
+        for state, color in STATUS_COLORS.items():
             self.tree.tag_configure(state, foreground=color)
 
         sb = ttk.Scrollbar(frame, orient='vertical', command=self.tree.yview)
@@ -146,15 +140,15 @@ class LinkGuardApp(ctk.CTk):
         sb.grid(row=0, column=1, sticky='ns')
 
     def _build_statusbar(self):
-        self.statusbar = ctk.CTkFrame(self, height=28, corner_radius=0, fg_color='#E5E7EB')
+        self.statusbar = ctk.CTkFrame(self, height=28, corner_radius=0, fg_color=GRAY_200)
         self.statusbar.grid(row=2, column=0, sticky='ew')
         self.statusbar.grid_propagate(False)
 
         self.status_label = ctk.CTkLabel(
             self.statusbar,
             text='Ready — load a file to begin.',
-            font=('Segoe UI', 11),
-            text_color='#4B5563'
+            font=FONT_SMALL,
+            text_color=GRAY_600
         )
         self.status_label.pack(side='left', padx=12)
 
@@ -208,10 +202,7 @@ class LinkGuardApp(ctk.CTk):
 
     def _toggle_filter(self):
         self._filter_errors_only = not self._filter_errors_only
-        if self._filter_errors_only:
-            self.btn_filter.configure(text_color='#EF4444')
-        else:
-            self.btn_filter.configure(text_color='#9CA3AF')
+        self.btn_filter.configure(text_color=RED if self._filter_errors_only else GRAY_400)
         self._redraw_grid()
 
     def _export(self):
@@ -246,13 +237,13 @@ class LinkGuardApp(ctk.CTk):
         self._results.append(result)
         self._scanned += 1
 
-        state = result.get('state', 'Unknown')
-        if state in ('Broken', 'Error', 'Timeout'):
+        state = self._state_of(result)
+        if is_error_state(state):
             self._errors += 1
 
         insert_result(result['url'], result['status_code'], result['latency_ms'], state)
 
-        if not self._filter_errors_only or state in ('Broken', 'Error', 'Timeout'):
+        if self._is_visible(state):
             self._insert_row(result)
 
         active = self._scan_thread.is_alive() if self._scan_thread else 0
@@ -269,10 +260,18 @@ class LinkGuardApp(ctk.CTk):
                 f'Scan complete — {self._total} URLs | {self._errors} errors found.'
             )
 
+    @staticmethod
+    def _state_of(result):
+        return result.get('state', STATE_UNKNOWN)
+
+    def _is_visible(self, state):
+        """Whether a result passes the current grid filter."""
+        return not self._filter_errors_only or is_error_state(state)
+
     def _insert_row(self, result):
         row_num = self.tree.get_children().__len__() + 1
         zebra = 'odd' if row_num % 2 == 0 else 'even'
-        state = result.get('state', 'Unknown')
+        state = self._state_of(result)
         tags = (zebra, state)
 
         self.tree.insert('', 'end',
@@ -293,10 +292,8 @@ class LinkGuardApp(ctk.CTk):
     def _redraw_grid(self):
         self._clear_grid()
         for result in self._results:
-            state = result.get('state', 'Unknown')
-            if self._filter_errors_only and state not in ('Broken', 'Error', 'Timeout'):
-                continue
-            self._insert_row(result)
+            if self._is_visible(self._state_of(result)):
+                self._insert_row(result)
 
     def _set_status(self, text):
         self.status_label.configure(text=text)
