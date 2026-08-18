@@ -45,7 +45,8 @@ class LinkGuardApp(ctk.CTk):
         self._urls = []
         self._results = []
         self._scan_queue = queue.Queue()
-        self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._cancel_event = threading.Event()
         self._scan_thread = None
         self._total = 0
         self._scanned = 0
@@ -54,6 +55,7 @@ class LinkGuardApp(ctk.CTk):
 
         self._build_ui()
         self._poll_queue()
+        self.protocol('WM_DELETE_WINDOW', self._on_close)
 
     # ── UI Construction ────────────────────────────────────────────────────
 
@@ -176,25 +178,33 @@ class LinkGuardApp(ctk.CTk):
         self._results = []
         self._scanned = 0
         self._errors = 0
-        self._stop_event.clear()
+        self._pause_event.clear()
+        self._cancel_event.clear()
 
         self.btn_start.configure(state='disabled')
-        self.btn_pause.configure(state='normal')
+        self.btn_pause.configure(text='Pause', state='normal')
 
         self._scan_thread = threading.Thread(
             target=run_scan,
-            args=(self._urls, self._scan_queue.put, self._stop_event),
+            args=(self._urls, self._scan_queue.put, self._pause_event, self._cancel_event),
             daemon=True
         )
         self._scan_thread.start()
 
     def _pause_scan(self):
-        if self._stop_event.is_set():
-            self._stop_event.clear()
+        if self._pause_event.is_set():
+            self._pause_event.clear()
             self.btn_pause.configure(text='Pause')
+            self._set_status(f'Resumed — scanned {self._scanned}/{self._total}.')
         else:
-            self._stop_event.set()
+            self._pause_event.set()
             self.btn_pause.configure(text='Resume')
+            self._set_status(f'Paused — scanned {self._scanned}/{self._total}.')
+
+    def _on_close(self):
+        self._cancel_event.set()
+        self._pause_event.clear()
+        self.destroy()
 
     def _toggle_filter(self):
         self._filter_errors_only = not self._filter_errors_only

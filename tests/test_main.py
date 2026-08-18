@@ -27,7 +27,8 @@ def app():
     app._urls = []
     app._results = []
     app._scan_queue = queue.Queue()
-    app._stop_event = threading.Event()
+    app._pause_event = threading.Event()
+    app._cancel_event = threading.Event()
     app._scan_thread = None
     app._total = 0
     app._scanned = 0
@@ -109,7 +110,8 @@ def test_start_scan_starts_thread_and_resets_counters(app):
     app._results = [_result()]
     app._scanned = 5
     app._errors = 3
-    app._stop_event.set()
+    app._pause_event.set()
+    app._cancel_event.set()
 
     with patch.object(main.threading, 'Thread') as Thread:
         app._start_scan()
@@ -117,16 +119,18 @@ def test_start_scan_starts_thread_and_resets_counters(app):
     Thread.assert_called_once()
     kwargs = Thread.call_args.kwargs
     assert kwargs['target'] is main.run_scan
-    assert kwargs['args'] == (app._urls, app._scan_queue.put, app._stop_event)
+    assert kwargs['args'] == (app._urls, app._scan_queue.put,
+                              app._pause_event, app._cancel_event)
     assert kwargs['daemon'] is True
     Thread.return_value.start.assert_called_once()
 
     assert app._results == []
     assert app._scanned == 0
     assert app._errors == 0
-    assert not app._stop_event.is_set()
+    assert not app._pause_event.is_set()
+    assert not app._cancel_event.is_set()
     app.btn_start.configure.assert_called_once_with(state='disabled')
-    app.btn_pause.configure.assert_called_once_with(state='normal')
+    app.btn_pause.configure.assert_called_once_with(text='Pause', state='normal')
     app.tree.delete.assert_not_called()  # no existing rows
 
 
@@ -143,17 +147,29 @@ def test_start_scan_ignored_while_scan_running(app):
 
 # ── _pause_scan ────────────────────────────────────────────────────────────
 
-def test_pause_scan_sets_stop_event(app):
+def test_pause_scan_sets_pause_event(app):
     app._pause_scan()
-    assert app._stop_event.is_set()
+    assert app._pause_event.is_set()
+    assert not app._cancel_event.is_set()  # pausing must not kill the scan
     app.btn_pause.configure.assert_called_once_with(text='Resume')
 
 
 def test_pause_scan_toggles_back_to_resume(app):
-    app._stop_event.set()
+    app._pause_event.set()
     app._pause_scan()
-    assert not app._stop_event.is_set()
+    assert not app._pause_event.is_set()
     app.btn_pause.configure.assert_called_once_with(text='Pause')
+
+
+# ── _on_close ──────────────────────────────────────────────────────────────
+
+def test_on_close_cancels_scan_and_destroys(app):
+    app._pause_event.set()
+    app.destroy = MagicMock()
+    app._on_close()
+    assert app._cancel_event.is_set()
+    assert not app._pause_event.is_set()  # unblock a paused worker so it can exit
+    app.destroy.assert_called_once_with()
 
 
 # ── _toggle_filter ─────────────────────────────────────────────────────────
@@ -389,7 +405,8 @@ def test_app_initial_state(real_app):
     assert real_app._results == []
     assert real_app._total == real_app._scanned == real_app._errors == 0
     assert real_app._filter_errors_only is False
-    assert not real_app._stop_event.is_set()
+    assert not real_app._pause_event.is_set()
+    assert not real_app._cancel_event.is_set()
     assert real_app.config == {'theme': 'light'}
 
 
