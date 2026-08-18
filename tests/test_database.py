@@ -1,6 +1,3 @@
-import sys, os, tempfile
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-
 import sqlite3
 import pytest
 from unittest.mock import MagicMock

@@ -1,7 +1,19 @@
-import time
 import logging
-import requests
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
+
+from theme import (
+    STATE_BROKEN,
+    STATE_ERROR,
+    STATE_HEALTHY,
+    STATE_REDIRECT,
+    STATE_TIMEOUT,
+    STATE_UNKNOWN,
+)
+from url_parser import parse_file  # noqa: F401 -- re-exported for callers
+from url_utils import normalize_url
 
 TIMEOUT = 10
 MAX_WORKERS = 10
@@ -13,16 +25,26 @@ logger = logging.getLogger(__name__)
 
 def _classify(status_code):
     if status_code is None:
-        return 'Timeout'
+        return STATE_TIMEOUT
     if 200 <= status_code < 300:
-        return 'Healthy'
+        return STATE_HEALTHY
     if 300 <= status_code < 400:
-        return 'Redirect'
+        return STATE_REDIRECT
     if status_code == 404:
-        return 'Broken'
+        return STATE_BROKEN
     if status_code >= 400:
-        return 'Error'
-    return 'Unknown'
+        return STATE_ERROR
+    return STATE_UNKNOWN
+
+
+def _result(url, status_code, latency_ms, state, error=None):
+    return {
+        'url': url,
+        'status_code': status_code,
+        'latency_ms': round(latency_ms, 2),
+        'state': state,
+        'error': error,
+    }
 
 
 def check_url(url):
@@ -30,9 +52,7 @@ def check_url(url):
     Send HEAD request, fall back to GET on 405.
     Returns dict: {url, status_code, latency_ms, state, error}
     """
-    url = url.strip()
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
+    url = normalize_url(url)
 
     start = time.monotonic()
     try:
@@ -40,59 +60,34 @@ def check_url(url):
         if resp.status_code == 405:
             resp = requests.get(url, timeout=TIMEOUT, headers=HEADERS, allow_redirects=True, stream=True)
         latency_ms = (time.monotonic() - start) * 1000
-        return {
-            'url': url,
-            'status_code': resp.status_code,
-            'latency_ms': round(latency_ms, 2),
-            'state': _classify(resp.status_code),
-            'error': None
-        }
+        return _result(url, resp.status_code, latency_ms, _classify(resp.status_code))
     except requests.exceptions.Timeout as exc:
         logger.warning('Timeout while checking %s: %s', url, exc)
-        return {
-            'url': url,
-            'status_code': None,
-            'latency_ms': TIMEOUT * 1000,
-            'state': 'Timeout',
-            'error': str(exc) or exc.__class__.__name__
-        }
+        return _result(
+            url,
+            None,
+            TIMEOUT * 1000,
+            STATE_TIMEOUT,
+            str(exc) or exc.__class__.__name__
+        )
     except requests.exceptions.RequestException as exc:
         logger.warning('Request failed while checking %s: %s', url, exc)
-        return {
-            'url': url,
-            'status_code': None,
-            'latency_ms': 0,
-            'state': 'Error',
-            'error': str(exc) or exc.__class__.__name__
-        }
+        return _result(
+            url,
+            None,
+            0,
+            STATE_ERROR,
+            str(exc) or exc.__class__.__name__
+        )
     except Exception as exc:
         logger.exception('Unexpected error while checking %s', url)
-        return {
-            'url': url,
-            'status_code': None,
-            'latency_ms': 0,
-            'state': 'Error',
-            'error': str(exc) or exc.__class__.__name__
-        }
-
-
-def parse_file(filepath):
-    """
-    Parse .csv or .txt file and return clean list of URL strings.
-    Handles empty rows, duplicates, whitespace.
-    """
-    urls = []
-    seen = set()
-    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-        for line in f:
-            # For CSV, take first column only
-            parts = line.strip().split(',')
-            url = parts[0].strip().strip('"').strip("'")
-            if url and url.lower() not in ('url', 'link', 'href'):  # skip headers
-                if url not in seen:
-                    seen.add(url)
-                    urls.append(url)
-    return urls
+        return _result(
+            url,
+            None,
+            0,
+            STATE_ERROR,
+            str(exc) or exc.__class__.__name__
+        )
 
 
 def run_scan(urls, callback, stop_event):
@@ -112,13 +107,13 @@ def run_scan(urls, callback, stop_event):
                 result = future.result()
             except Exception as exc:
                 logger.exception('Unexpected worker error while checking %s', url)
-                result = {
-                    'url': url,
-                    'status_code': None,
-                    'latency_ms': 0,
-                    'state': 'Error',
-                    'error': str(exc) or exc.__class__.__name__
-                }
+                result = _result(
+                    url,
+                    None,
+                    0,
+                    STATE_ERROR,
+                    str(exc) or exc.__class__.__name__
+                )
             try:
                 callback(result)
             except Exception:

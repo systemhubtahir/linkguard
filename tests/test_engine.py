@@ -1,10 +1,8 @@
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-
-import threading
 from unittest.mock import patch, MagicMock
 import pytest
 import requests
+import threading
+
 from engine import check_url, parse_file, run_scan, _classify
 
 
