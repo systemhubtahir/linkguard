@@ -1,12 +1,29 @@
 """
-url_utils.py -- Shared URL normalisation and de-duplication helpers.
+url_utils.py -- Shared URL normalisation, validation and de-duplication helpers.
 """
+
+import re
+from urllib.parse import urlsplit
 
 SCHEMES = ("http://", "https://")
 DEFAULT_SCHEME = "https://"
+ALLOWED_SCHEMES = ("http", "https")
+MAX_URL_LENGTH = 2048
 
 # Cells/lines that are column headers rather than URLs.
 HEADER_LABELS = ("url", "link", "href")
+
+_SCHEME_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):(//)?")
+
+
+def has_scheme(url: str) -> bool:
+    """True if the URL already carries a scheme (``host:8080`` does not)."""
+    match = _SCHEME_RE.match(url)
+    if not match:
+        return False
+    if match.group(2):
+        return True
+    return not url[match.end():][:1].isdigit()
 
 
 def normalize_url(url: str) -> str:
@@ -16,9 +33,30 @@ def normalize_url(url: str) -> str:
     url = url.strip().strip('"').strip("'")
     if not url:
         return url
-    if not url.startswith(SCHEMES):
+    if not has_scheme(url):
         url = DEFAULT_SCHEME + url
     return url
+
+
+def is_safe_url(url: str) -> bool:
+    """True only for well-formed http(s) URLs without embedded credentials."""
+    if not url or len(url) > MAX_URL_LENGTH:
+        return False
+    if any(char in url for char in ("\n", "\r", "\t", " ")):
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme not in ALLOWED_SCHEMES or not parts.hostname:
+        return False
+    if parts.username or parts.password:
+        return False
+    try:
+        parts.port
+    except ValueError:
+        return False
+    return True
 
 
 def is_header_label(value: str) -> bool:

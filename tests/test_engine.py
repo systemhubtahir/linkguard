@@ -91,3 +91,13 @@ def test_parse_file_skips_headers(tmp_path):
     f.write_text('url\nhttps://a.com\n')
     urls = parse_file(str(f))
     assert all('url' not in u.lower() or u.startswith('http') for u in urls)
+
+
+def test_check_url_rejects_non_http_scheme():
+    result = check_url('file:///etc/passwd')
+    assert result['state'] == 'Invalid'
+    assert result['status_code'] is None
+
+
+def test_check_url_rejects_embedded_credentials():
+    assert check_url('https://user:pass@example.com')['state'] == 'Invalid'

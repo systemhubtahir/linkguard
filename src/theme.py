@@ -8,10 +8,11 @@ STATE_REDIRECT = "Redirect"
 STATE_BROKEN = "Broken"
 STATE_TIMEOUT = "Timeout"
 STATE_ERROR = "Error"
+STATE_INVALID = "Invalid"
 STATE_UNKNOWN = "Unknown"
 
 # States that count as a failed link (grid filter, error tally).
-ERROR_STATES = (STATE_BROKEN, STATE_ERROR, STATE_TIMEOUT)
+ERROR_STATES = (STATE_BROKEN, STATE_ERROR, STATE_TIMEOUT, STATE_INVALID)
 
 # ── Palette ────────────────────────────────────────────────────────────────
 GREEN = "#10B981"
@@ -39,6 +40,7 @@ STATUS_COLORS = {
     STATE_TIMEOUT: RED,
     STATE_ERROR: RED,
     "Server Error": RED,
+    STATE_INVALID: GRAY_400,
     STATE_UNKNOWN: GRAY_400,
 }
 

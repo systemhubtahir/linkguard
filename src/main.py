@@ -161,7 +161,11 @@ class LinkGuardApp(ctk.CTk):
         )
         if not path:
             return
-        self._urls = parse_file(path)
+        try:
+            self._urls = parse_file(path)
+        except (ValueError, OSError) as e:
+            messagebox.showerror('Could not load file', str(e))
+            return
         self._total = len(self._urls)
         self._set_status(f'Loaded {self._total} URLs — press Start Scan.')
 
@@ -225,7 +229,7 @@ class LinkGuardApp(ctk.CTk):
             while True:
                 result = self._scan_queue.get_nowait()
                 self._handle_result(result)
-        except Exception:
+        except queue.Empty:
             pass
         self.after(150, self._poll_queue)
 

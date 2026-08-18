@@ -6,15 +6,17 @@ from theme import (
     STATE_BROKEN,
     STATE_ERROR,
     STATE_HEALTHY,
+    STATE_INVALID,
     STATE_REDIRECT,
     STATE_TIMEOUT,
     STATE_UNKNOWN,
 )
 from url_parser import parse_file  # noqa: F401 -- re-exported for callers
-from url_utils import normalize_url
+from url_utils import is_safe_url, normalize_url
 
 TIMEOUT = 10
 MAX_WORKERS = 10
+MAX_REDIRECTS = 5
 HEADERS = {
     'User-Agent': 'LinkGuard/1.0 (link health checker; +https://github.com/linkguard)'
 }
@@ -49,18 +51,27 @@ def check_url(url):
     Returns dict: {url, status_code, latency_ms, state}
     """
     url = normalize_url(url)
+    if not is_safe_url(url):
+        return _result(url, None, 0, STATE_INVALID)
 
     start = time.monotonic()
+    streamed = None
     try:
         resp = requests.head(url, timeout=TIMEOUT, headers=HEADERS, allow_redirects=True)
         if resp.status_code == 405:
-            resp = requests.get(url, timeout=TIMEOUT, headers=HEADERS, allow_redirects=True, stream=True)
+            resp = streamed = requests.get(url, timeout=TIMEOUT, headers=HEADERS,
+                                           allow_redirects=True, stream=True)
         latency_ms = (time.monotonic() - start) * 1000
+        if len(getattr(resp, 'history', ()) or ()) > MAX_REDIRECTS:
+            return _result(url, resp.status_code, latency_ms, STATE_ERROR)
         return _result(url, resp.status_code, latency_ms, _classify(resp.status_code))
     except requests.exceptions.Timeout:
         return _result(url, None, TIMEOUT * 1000, STATE_TIMEOUT)
     except Exception:
         return _result(url, None, 0, STATE_ERROR)
+    finally:
+        if streamed is not None:
+            streamed.close()
 
 
 def run_scan(urls, callback, stop_event):
