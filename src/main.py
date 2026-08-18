@@ -1,5 +1,6 @@
 import customtkinter as ctk
 from tkinter import ttk, filedialog, messagebox
+import logging
 import threading
 import queue
 import os
@@ -27,6 +28,8 @@ from theme import (
 )
 from ui_components import make_toolbar_button
 
+logger = logging.getLogger(__name__)
+
 # ── Theme ──────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode('light')
 ctk.set_default_color_theme('blue')
@@ -39,8 +42,20 @@ class LinkGuardApp(ctk.CTk):
         self.geometry('1100x680')
         self.minsize(900, 580)
 
-        init_db()
-        self.config = load_config()
+        self._persistence_available = True
+        self._persistence_error_reported = False
+        try:
+            init_db()
+            self.config = load_config()
+        except Exception as exc:
+            logger.exception('Database initialization failed')
+            self.config = {}
+            self._persistence_available = False
+            messagebox.showerror(
+                'Database unavailable',
+                f'LinkGuard could not initialize its database. '
+                f'Scan results will not be saved.\n\n{exc}'
+            )
 
         self._urls = []
         self._results = []
@@ -51,8 +66,11 @@ class LinkGuardApp(ctk.CTk):
         self._scanned = 0
         self._errors = 0
         self._filter_errors_only = False
+        self._scan_end_reported = False
 
         self._build_ui()
+        if not self._persistence_available:
+            self._set_status('Persistence unavailable — scan results will not be saved.')
         self._poll_queue()
 
     # ── UI Construction ────────────────────────────────────────────────────
@@ -161,8 +179,22 @@ class LinkGuardApp(ctk.CTk):
         )
         if not path:
             return
-        self._urls = parse_file(path)
+        try:
+            self._urls = parse_file(path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            logger.exception('Failed to load URL file %s', path)
+            self._urls = []
+            self._total = 0
+            messagebox.showerror('Load failed', f'Could not load {path}:\n{exc}')
+            return
         self._total = len(self._urls)
+        if not self._urls:
+            self._set_status('No URLs found in the selected file.')
+            messagebox.showwarning(
+                'No URLs found',
+                'The selected file did not contain any URLs.'
+            )
+            return
         self._set_status(f'Loaded {self._total} URLs — press Start Scan.')
 
     def _start_scan(self):
@@ -176,17 +208,26 @@ class LinkGuardApp(ctk.CTk):
         self._results = []
         self._scanned = 0
         self._errors = 0
+        self._scan_end_reported = False
         self._stop_event.clear()
 
         self.btn_start.configure(state='disabled')
         self.btn_pause.configure(state='normal')
 
         self._scan_thread = threading.Thread(
-            target=run_scan,
-            args=(self._urls, self._scan_queue.put, self._stop_event),
+            target=self._run_scan,
             daemon=True
         )
         self._scan_thread.start()
+
+    def _run_scan(self):
+        try:
+            run_scan(self._urls, self._scan_queue.put, self._stop_event)
+        except Exception as exc:
+            logger.exception('Scan thread failed')
+            self._scan_queue.put({
+                '__error__': str(exc) or exc.__class__.__name__
+            })
 
     def _pause_scan(self):
         if self._stop_event.is_set():
@@ -223,11 +264,44 @@ class LinkGuardApp(ctk.CTk):
     def _poll_queue(self):
         try:
             while True:
-                result = self._scan_queue.get_nowait()
-                self._handle_result(result)
-        except Exception:
-            pass
-        self.after(150, self._poll_queue)
+                try:
+                    result = self._scan_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    if isinstance(result, dict) and '__error__' in result:
+                        self._handle_scan_error(result)
+                    else:
+                        self._handle_result(result)
+                except Exception as exc:
+                    logger.exception('Failed to handle scan queue item')
+                    self._set_status(f'Failed to handle scan result: {exc}')
+            self._check_scan_liveness()
+        finally:
+            self.after(150, self._poll_queue)
+
+    def _handle_scan_error(self, result):
+        error = result.get('__error__') or 'Unknown scan thread error'
+        logger.error('Scan thread reported an error: %s', error)
+        self._scan_end_reported = True
+        self._set_status(f'Scan failed: {error}')
+        messagebox.showerror('Scan failed', error)
+        self.btn_start.configure(state='normal')
+        self.btn_pause.configure(state='disabled')
+
+    def _check_scan_liveness(self):
+        if self._scan_end_reported or not self._scan_thread:
+            return
+        if self._scan_thread.is_alive() or not self._scan_queue.empty():
+            return
+        if self._scanned < self._total:
+            missing = self._total - self._scanned
+            self._scan_end_reported = True
+            self._set_status(
+                f'Scan incomplete — {missing} URLs did not report results.'
+            )
+            self.btn_start.configure(state='normal')
+            self.btn_pause.configure(state='disabled')
 
     def _handle_result(self, result):
         self._results.append(result)
@@ -237,24 +311,34 @@ class LinkGuardApp(ctk.CTk):
         if is_error_state(state):
             self._errors += 1
 
-        insert_result(result['url'], result['status_code'], result['latency_ms'], state)
+        if self._persistence_available:
+            try:
+                insert_result(result['url'], result['status_code'], result['latency_ms'], state)
+            except Exception:
+                logger.exception('Failed to persist scan result for %s', result['url'])
+                self._persistence_error_reported = True
 
         if self._is_visible(state):
             self._insert_row(result)
 
         active = self._scan_thread.is_alive() if self._scan_thread else 0
-        self._set_status(
+        status = (
             f'Scanned: {self._scanned}/{self._total} | '
             f'Errors: {self._errors} | '
             f'Active Threads: {min(10, self._total - self._scanned) if active else 0}'
         )
+        if not self._persistence_available or self._persistence_error_reported:
+            status += ' | Results not saved'
+        self._set_status(status)
 
         if self._scanned >= self._total:
+            self._scan_end_reported = True
             self.btn_start.configure(state='normal')
             self.btn_pause.configure(state='disabled')
-            self._set_status(
-                f'Scan complete — {self._total} URLs | {self._errors} errors found.'
-            )
+            status = f'Scan complete — {self._total} URLs | {self._errors} errors found.'
+            if not self._persistence_available or self._persistence_error_reported:
+                status += ' | Results not saved'
+            self._set_status(status)
 
     @staticmethod
     def _state_of(result):
@@ -296,5 +380,9 @@ class LinkGuardApp(ctk.CTk):
 
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s %(name)s: %(message)s'
+    )
     app = LinkGuardApp()
     app.mainloop()

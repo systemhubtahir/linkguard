@@ -1,3 +1,4 @@
+import logging
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -5,6 +6,7 @@ from contextlib import contextmanager
 from paths import ensure_dir, project_path
 
 DB_PATH = project_path('data', 'linkguard.db')
+logger = logging.getLogger(__name__)
 
 SCHEMA = (
     '''
@@ -34,6 +36,13 @@ def _connect(commit=False):
         yield conn
         if commit:
             conn.commit()
+    except Exception:
+        logger.exception('Database operation failed')
+        try:
+            conn.rollback()
+        except Exception:
+            logger.exception('Database rollback failed')
+        raise
     finally:
         conn.close()
 

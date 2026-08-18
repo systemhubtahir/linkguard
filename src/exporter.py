@@ -1,10 +1,13 @@
+import logging
 import os
-import pandas as pd
 from datetime import datetime
+
+import pandas as pd
 
 from paths import ensure_dir, project_path
 
 RESULT_COLUMNS = ['url', 'status_code', 'latency_ms', 'state']
+logger = logging.getLogger(__name__)
 
 
 def export_csv(results, filepath=None):
@@ -25,5 +28,9 @@ def export_csv(results, filepath=None):
     df.index += 1
     df.index.name = 'id'
     df['timestamp'] = now.strftime('%Y-%m-%d %H:%M:%S')
-    df.to_csv(filepath)
+    try:
+        df.to_csv(filepath)
+    except OSError as exc:
+        logger.exception('Failed to write CSV export to %s', filepath)
+        raise OSError(f'Failed to write export to {filepath}: {exc}') from exc
     return filepath
