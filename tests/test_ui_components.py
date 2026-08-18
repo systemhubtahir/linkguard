@@ -2,20 +2,26 @@
 Tests for ui_components.
 
 Widget factories need a Tk root, so those tests are skipped when no display is
-available (e.g. headless CI). The colour constants are asserted unconditionally.
+available (e.g. headless CI). The palette wiring is asserted unconditionally.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-
 import pytest
 
 import ui_components
-from ui_components import ROW_EVEN, ROW_ODD, STATUS_COLORS, make_action_button, make_status_bar
+from theme import GRAY_400, GRAY_500, GRAY_800, WHITE
+from ui_components import (
+    BUTTON_STYLES,
+    ROW_EVEN,
+    ROW_ODD,
+    STATUS_COLORS,
+    make_action_button,
+    make_status_bar,
+    make_toolbar_button,
+)
 
 ctk = ui_components.ctk
 
 
-# ── constants ──────────────────────────────────────────────────────────────
+# ── re-exported palette ────────────────────────────────────────────────────
 
 def test_status_colors_cover_all_states():
     assert set(STATUS_COLORS) == {
@@ -38,6 +44,13 @@ def test_zebra_rows_differ():
     assert ROW_ODD != ROW_EVEN
 
 
+@pytest.mark.parametrize('style', list(BUTTON_STYLES))
+def test_button_styles_are_hex_triples(style):
+    colors = BUTTON_STYLES[style]
+    assert len(colors) == 3
+    assert all(c.startswith('#') and len(c) == 7 for c in colors)
+
+
 # ── widget factories ───────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -54,22 +67,23 @@ def test_make_action_button_primary_defaults(root):
     button = make_action_button(root, 'Start Scan')
     assert isinstance(button, ctk.CTkButton)
     assert button.cget('text') == 'Start Scan'
-    assert button.cget('fg_color') == '#1F2937'
-    assert button.cget('text_color') == '#FFFFFF'
+    assert button.cget('fg_color') == GRAY_800
+    assert button.cget('text_color') == WHITE
     assert button.cget('corner_radius') == 2
     assert button.cget('height') == 30
 
 
 def test_make_action_button_secondary_style(root):
     button = make_action_button(root, 'Cancel', style='secondary')
-    assert button.cget('fg_color') == '#E5E7EB'
-    assert button.cget('text_color') == '#1F2937'
-    assert button.cget('hover_color') == '#D1D5DB'
+    fg_color, hover_color, text_color = BUTTON_STYLES['secondary']
+    assert button.cget('fg_color') == fg_color
+    assert button.cget('hover_color') == hover_color
+    assert button.cget('text_color') == text_color
 
 
-def test_make_action_button_unknown_style_falls_back_to_primary(root):
-    button = make_action_button(root, 'Odd', style='nonsense')
-    assert button.cget('fg_color') == '#1F2937'
+def test_make_action_button_unknown_style_raises(root):
+    with pytest.raises(KeyError):
+        make_action_button(root, 'Odd', style='nonsense')
 
 
 def test_make_action_button_binds_command(root):
@@ -79,9 +93,33 @@ def test_make_action_button_binds_command(root):
     assert calls == [1]
 
 
+def test_make_toolbar_button_defaults(root):
+    button = make_toolbar_button(root, 'Load File')
+    assert button.cget('fg_color') == BUTTON_STYLES['toolbar'][0]
+    assert button.cget('width') == 110
+    assert button.cget('height') == 32
+
+
+@pytest.mark.parametrize('style', ['start', 'pause', 'toolbar_muted'])
+def test_make_toolbar_button_styles(root, style):
+    button = make_toolbar_button(root, style, style=style)
+    assert button.cget('fg_color') == BUTTON_STYLES[style][0]
+
+
+def test_make_toolbar_button_muted_text_color(root):
+    button = make_toolbar_button(root, 'Errors Only', style='toolbar_muted')
+    assert button.cget('text_color') == GRAY_400
+
+
+def test_make_toolbar_button_forwards_width_and_kwargs(root):
+    button = make_toolbar_button(root, 'Pause', style='pause', width=90, state='disabled')
+    assert button.cget('width') == 90
+    assert button.cget('state') == 'disabled'
+
+
 def test_make_status_bar_defaults(root):
     label = make_status_bar(root)
     assert isinstance(label, ctk.CTkLabel)
     assert label.cget('text') == 'Ready — Load a file to begin.'
-    assert label.cget('text_color') == '#6B7280'
+    assert label.cget('text_color') == GRAY_500
     assert label.cget('anchor') == 'w'

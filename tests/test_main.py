@@ -6,9 +6,6 @@ widgets/state the tested methods touch are replaced with mocks. This exercises
 the controller logic (loading, scanning, filtering, exporting, result handling)
 without needing a display.
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-
 import queue
 import threading
 from unittest.mock import MagicMock, patch
@@ -16,7 +13,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import main
-from main import LinkGuardApp, STATE_COLORS
+from main import LinkGuardApp
+from theme import GRAY_400, RED
 
 
 def _result(url='https://example.com', status_code=200, latency_ms=100.0, state='Healthy'):
@@ -44,11 +42,27 @@ def app():
     return app
 
 
-# ── constants ──────────────────────────────────────────────────────────────
+# ── _state_of / _is_visible ────────────────────────────────────────────────
 
-def test_state_colors_cover_engine_states():
-    for state in ('Healthy', 'Redirect', 'Broken', 'Error', 'Timeout', 'Unknown'):
-        assert STATE_COLORS[state].startswith('#')
+def test_state_of_defaults_to_unknown(app):
+    assert app._state_of({'url': 'https://a.com'}) == 'Unknown'
+    assert app._state_of(_result(state='Broken')) == 'Broken'
+
+
+@pytest.mark.parametrize('state,visible', [
+    ('Healthy', False),
+    ('Redirect', False),
+    ('Broken', True),
+    ('Error', True),
+    ('Timeout', True),
+])
+def test_is_visible_while_filtering(app, state, visible):
+    app._filter_errors_only = True
+    assert app._is_visible(state) is visible
+
+
+def test_is_visible_without_filter_shows_everything(app):
+    assert all(app._is_visible(s) for s in ('Healthy', 'Redirect', 'Broken', 'Unknown'))
 
 
 # ── _set_status ────────────────────────────────────────────────────────────
@@ -148,7 +162,7 @@ def test_toggle_filter_enables_and_redraws(app):
     app._results = [_result(state='Healthy'), _result(url='https://x.com', state='Broken')]
     app._toggle_filter()
     assert app._filter_errors_only is True
-    app.btn_filter.configure.assert_called_once_with(text_color='#EF4444')
+    app.btn_filter.configure.assert_called_once_with(text_color=RED)
     # only the broken row is re-inserted
     assert app.tree.insert.call_count == 1
     assert app.tree.insert.call_args.kwargs['values'][1] == 'https://x.com'
@@ -159,7 +173,7 @@ def test_toggle_filter_disables_and_shows_all(app):
     app._results = [_result(state='Healthy'), _result(url='https://x.com', state='Broken')]
     app._toggle_filter()
     assert app._filter_errors_only is False
-    app.btn_filter.configure.assert_called_once_with(text_color='#9CA3AF')
+    app.btn_filter.configure.assert_called_once_with(text_color=GRAY_400)
     assert app.tree.insert.call_count == 2
 
 

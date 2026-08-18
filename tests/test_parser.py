@@ -1,9 +1,8 @@
 """Tests for url_parser.parse_file."""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import os
 
 import pytest
-import tempfile
+
 from src.url_parser import parse_file, _fix_scheme
 
 
