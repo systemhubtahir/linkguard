@@ -5,7 +5,8 @@ import queue
 import os
 
 from database import init_db, insert_result, load_config
-from engine import parse_file, run_scan
+from engine import run_scan
+from url_parser import parse_file
 from exporter import export_csv
 
 # ── Theme ──────────────────────────────────────────────────────────────────
@@ -19,6 +20,7 @@ STATE_COLORS = {
     'Broken':   '#EF4444',
     'Error':    '#EF4444',
     'Timeout':  '#F59E0B',
+    'Invalid':  '#9CA3AF',
     'Unknown':  '#9CA3AF',
 }
 
@@ -165,7 +167,11 @@ class LinkGuardApp(ctk.CTk):
         )
         if not path:
             return
-        self._urls = parse_file(path)
+        try:
+            self._urls = parse_file(path)
+        except (ValueError, OSError) as e:
+            messagebox.showerror('Could not load file', str(e))
+            return
         self._total = len(self._urls)
         self._set_status(f'Loaded {self._total} URLs — press Start Scan.')
 
@@ -232,7 +238,7 @@ class LinkGuardApp(ctk.CTk):
             while True:
                 result = self._scan_queue.get_nowait()
                 self._handle_result(result)
-        except Exception:
+        except queue.Empty:
             pass
         self.after(150, self._poll_queue)
 

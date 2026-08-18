@@ -2,8 +2,12 @@ import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from url_parser import _fix_scheme, is_safe_url
+from url_parser import parse_file as _parse_url_file
+
 TIMEOUT = 10
 MAX_WORKERS = 10
+MAX_REDIRECTS = 5
 HEADERS = {
     'User-Agent': 'LinkGuard/1.0 (link health checker; +https://github.com/linkguard)'
 }
@@ -28,47 +32,47 @@ def check_url(url):
     Send HEAD request, fall back to GET on 405.
     Returns dict: {url, status_code, latency_ms, state}
     """
-    url = url.strip()
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
+    url = _fix_scheme(url.strip())
+
+    if not is_safe_url(url):
+        return {'url': url, 'status_code': None, 'latency_ms': 0, 'state': 'Invalid'}
 
     start = time.monotonic()
+    streamed = None
     try:
         resp = requests.head(url, timeout=TIMEOUT, headers=HEADERS, allow_redirects=True)
         if resp.status_code == 405:
-            resp = requests.get(url, timeout=TIMEOUT, headers=HEADERS, allow_redirects=True, stream=True)
+            resp = streamed = requests.get(url, timeout=TIMEOUT, headers=HEADERS,
+                                           allow_redirects=True, stream=True)
         latency_ms = (time.monotonic() - start) * 1000
+        if len(getattr(resp, 'history', ()) or ()) > MAX_REDIRECTS:
+            return {'url': url, 'status_code': resp.status_code,
+                    'latency_ms': round(latency_ms, 2), 'state': 'Error'}
         return {
             'url': url,
             'status_code': resp.status_code,
             'latency_ms': round(latency_ms, 2),
             'state': _classify(resp.status_code)
         }
+    except requests.exceptions.TooManyRedirects:
+        return {'url': url, 'status_code': None, 'latency_ms': 0, 'state': 'Error'}
     except requests.exceptions.Timeout:
         return {'url': url, 'status_code': None, 'latency_ms': TIMEOUT * 1000, 'state': 'Timeout'}
     except requests.exceptions.ConnectionError:
         return {'url': url, 'status_code': None, 'latency_ms': 0, 'state': 'Error'}
     except Exception:
         return {'url': url, 'status_code': None, 'latency_ms': 0, 'state': 'Error'}
+    finally:
+        if streamed is not None:
+            streamed.close()
 
 
 def parse_file(filepath):
     """
-    Parse .csv or .txt file and return clean list of URL strings.
+    Parse .csv or .txt file and return clean list of validated URL strings.
     Handles empty rows, duplicates, whitespace.
     """
-    urls = []
-    seen = set()
-    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-        for line in f:
-            # For CSV, take first column only
-            parts = line.strip().split(',')
-            url = parts[0].strip().strip('"').strip("'")
-            if url and url.lower() not in ('url', 'link', 'href'):  # skip headers
-                if url not in seen:
-                    seen.add(url)
-                    urls.append(url)
-    return urls
+    return _parse_url_file(filepath)
 
 
 def run_scan(urls, callback, stop_event):

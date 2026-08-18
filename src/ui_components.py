@@ -13,6 +13,7 @@ STATUS_COLORS = {
     "Timeout":      "#EF4444",
     "Error":        "#EF4444",
     "Server Error": "#EF4444",
+    "Invalid":      "#9CA3AF",
     "Unknown":      "#9CA3AF",
 }
 
